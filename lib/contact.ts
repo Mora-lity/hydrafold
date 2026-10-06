@@ -1,9 +1,8 @@
-// Ganti placeholder di bawah dengan nomor WhatsApp dan akun Instagram asli.
 export const CONTACT = {
-  whatsappNumber: '6281234567890',
-  whatsappMessage: 'Halo HydraFold, saya ingin bertanya.',
-  instagramHandle: 'hydrafold.id',
+  whatsappDisplay: '0895 1621 5704',
+  whatsappNumber: '6289516215704',
+  instagramHandle: 'haidarzmn',
 }
 
-export const whatsappUrl = `https://wa.me/${CONTACT.whatsappNumber}?text=${encodeURIComponent(CONTACT.whatsappMessage)}`
+export const whatsappUrl = `https://wa.me/${CONTACT.whatsappNumber}`
 export const instagramUrl = `https://instagram.com/${CONTACT.instagramHandle}`
