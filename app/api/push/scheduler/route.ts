@@ -68,7 +68,7 @@ export async function POST(request: Request) {
 
         // Claim the delivery atomically. Only one scheduler request can
         // successfully change the current attempt into "processing".
-        const claimToken = randomToken()
+        const claimToken = crypto.randomUUID()
         const claimUntil = new Date(now.getTime() + 120_000)
 
         const claimed = await supabase<
