@@ -6,7 +6,6 @@ export async function POST(request: Request) {
   if (!device) return jsonError('Token perangkat tidak valid.', 401)
 
   const body = await request.json().catch(() => null)
-
   if (
     !body?.endpoint ||
     !body?.keys?.p256dh ||
@@ -17,23 +16,19 @@ export async function POST(request: Request) {
   }
 
   try {
-    await supabase(
-      'push_subscriptions?on_conflict=device_id,endpoint',
-      {
-        method: 'POST',
-        headers: {
-          Prefer: 'resolution=merge-duplicates,return=minimal',
-        },
-        body: JSON.stringify({
-          device_id: device.id,
-          endpoint: body.endpoint,
-          expiration_time: body.expirationTime ?? null,
-          keys: body.keys,
-          active: true,
-        }),
-      },
-    )
-
+    await supabase('push_subscriptions?on_conflict=device_id,endpoint', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        device_id: device.id,
+        endpoint: body.endpoint,
+        expiration_time: body.expirationTime ?? null,
+        keys: body.keys,
+        active: true,
+        last_error: null,
+        updated_at: new Date().toISOString(),
+      }),
+    })
     return Response.json({ ok: true })
   } catch {
     return jsonError('Gagal menyimpan subscription.', 503)
