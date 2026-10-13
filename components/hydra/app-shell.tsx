@@ -16,12 +16,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const needsProfile = state !== null && !state.profile && pathname !== '/edukasi'
+  const ready = state !== null && !needsProfile
 
   useEffect(() => {
     if (needsProfile) router.replace('/profil')
   }, [needsProfile, router])
 
-  const ready = state !== null && !needsProfile
+  useEffect(() => {
+    if (!ready || !('serviceWorker' in navigator)) return
+    void navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => undefined)
+  }, [ready])
 
   return (
     <div className="min-h-dvh md:pl-64">
