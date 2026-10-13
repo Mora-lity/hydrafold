@@ -111,24 +111,90 @@ export async function loadSchedules(deviceId: string) {
   return supabase<{ id: string; time: string; days: number[]; timezone: string }[]>(`push_schedules?device_id=eq.${encodeURIComponent(deviceId)}&active=eq.true&select=id,time,days,timezone`)
 }
 
-export async function processDueDelivery(delivery: { id: string; device_id: string; schedule_id: string; attempt_count: number; max_attempts: number }) {
+
+export async function processDueDelivery(delivery: {
+  id: string
+  device_id: string
+  schedule_id: string
+  attempt_count: number
+  max_attempts: number
+}) {
   const subscriptions = await loadSubscriptions(delivery.device_id)
   let succeeded = 0
+
   for (const subscription of subscriptions) {
     if (!subscription.id) continue
-    const target = await supabase<{ status: string }[]>('push_delivery_targets?select=status&delivery_id=eq.' + encodeURIComponent(delivery.id) + '&subscription_id=eq.' + encodeURIComponent(subscription.id))
-    if (target[0]?.status === 'sent') continue
+
+    const targetPath =
+      'push_delivery_targets?delivery_id=eq.' +
+      encodeURIComponent(delivery.id) +
+      '&subscription_id=eq.' +
+      encodeURIComponent(subscription.id)
+
+    const existing = await supabase<{ status: string }[]>(
+      targetPath + '&select=status',
+    )
+
+    // Never send the same occurrence again to a subscription
+    // that has already received it or permanently failed.
+    if (
+      existing[0]?.status === 'sent' ||
+      existing[0]?.status === 'failed'
+    ) {
+      continue
+    }
+
+    // Create a target only when one does not exist yet.
+    if (!existing.length) {
+      await supabase('push_delivery_targets?on_conflict=delivery_id,subscription_id', {
+        method: 'POST',
+        headers: {
+          Prefer: 'resolution=ignore-duplicates,return=minimal',
+        },
+        body: JSON.stringify({
+          delivery_id: delivery.id,
+          subscription_id: subscription.id,
+          endpoint: subscription.endpoint,
+          status: 'pending',
+          attempt_count: 0,
+        }),
+      })
+    }
+
     try {
-      await sendPush(subscription, { type: 'reminder', scheduleId: delivery.schedule_id })
-      await supabase('push_delivery_targets', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ delivery_id: delivery.id, subscription_id: subscription.id, endpoint: subscription.endpoint, status: 'sent', sent_at: new Date().toISOString() }) })
+      await sendPush(subscription, {
+        type: 'reminder',
+        scheduleId: delivery.schedule_id,
+      })
+
+      await supabase(targetPath, {
+        method: 'PATCH',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          status: 'sent',
+          sent_at: new Date().toISOString(),
+          last_error: null,
+        }),
+      })
+
       succeeded++
     } catch (error) {
-      await supabase('push_delivery_targets', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ delivery_id: delivery.id, subscription_id: subscription.id, endpoint: subscription.endpoint, status: isRetryablePushError(error) ? 'retryable' : 'failed', last_error: String(error) }) })
+      const retryable = isRetryablePushError(error)
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
+
+      await supabase(targetPath, {
+        method: 'PATCH',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          status: retryable ? 'retryable' : 'failed',
+          attempt_count: delivery.attempt_count,
+          last_error: errorMessage.slice(0, 1000),
+        }),
+      })
     }
   }
+
   return succeeded
 }
 
-export const MAX_ATTEMPTS = 5
-export const CLAIM_TTL_SECONDS = 120
-export const pushConfig = { vapidPublicKey }
