@@ -13,12 +13,22 @@ export type Profile = {
   bottleMl: number
 }
 
+export type ReminderSchedule = {
+  id: string
+  time: string
+  enabled: boolean
+  days?: number[]
+}
+
 export type ReminderSettings = {
   enabled: boolean
   startTime: string
   endTime: string
   intervalMin: number
   days: number[]
+  timezone?: string
+  schedules?: ReminderSchedule[]
+  migrationNeedsReview?: boolean
 }
 
 export type DrinkLog = {
@@ -42,6 +52,40 @@ export const DEFAULT_REMINDER: ReminderSettings = {
   endTime: '21:00',
   intervalMin: 60,
   days: [1, 2, 3, 4, 5],
+  timezone: undefined,
+  schedules: [
+    { id: 'default-07-00', time: '07:00', enabled: true },
+    { id: 'default-08-00', time: '08:00', enabled: true },
+    { id: 'default-09-00', time: '09:00', enabled: true },
+    { id: 'default-10-00', time: '10:00', enabled: true },
+    { id: 'default-11-00', time: '11:00', enabled: true },
+    { id: 'default-12-00', time: '12:00', enabled: true },
+    { id: 'default-13-00', time: '13:00', enabled: true },
+    { id: 'default-14-00', time: '14:00', enabled: true },
+    { id: 'default-15-00', time: '15:00', enabled: true },
+    { id: 'default-16-00', time: '16:00', enabled: true },
+    { id: 'default-17-00', time: '17:00', enabled: true },
+    { id: 'default-18-00', time: '18:00', enabled: true },
+    { id: 'default-19-00', time: '19:00', enabled: true },
+    { id: 'default-20-00', time: '20:00', enabled: true },
+    { id: 'default-21-00', time: '21:00', enabled: true },
+  ],
+}
+
+function migrateReminder(input: Partial<ReminderSettings> | undefined): ReminderSettings {
+  const reminder = { ...DEFAULT_REMINDER, ...input }
+  if (Array.isArray(input?.schedules)) return reminder
+  const start = Number(input?.startTime?.split(':')[0])
+  const end = Number(input?.endTime?.split(':')[0])
+  const interval = Number(input?.intervalMin)
+  const schedules: ReminderSchedule[] = []
+  if (Number.isInteger(start) && Number.isInteger(end) && interval >= 15 && end >= start && end <= 23) {
+    for (let minutes = start * 60; minutes <= end * 60; minutes += interval) {
+      const time = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+      schedules.push({ id: `migrated-${time.replace(':', '-')}`, time, enabled: true })
+    }
+  }
+  return { ...reminder, schedules: schedules.length ? schedules : [{ id: 'review-07-00', time: '07:00', enabled: false }], migrationNeedsReview: true }
 }
 
 const DEFAULT_STATE: HydraState = {
@@ -63,7 +107,7 @@ function readFromStorage() {
     return {
       ...DEFAULT_STATE,
       ...parsed,
-      reminder: { ...DEFAULT_REMINDER, ...parsed.reminder },
+      reminder: migrateReminder(parsed.reminder),
       logs: Array.isArray(parsed.logs) ? parsed.logs : [],
     }
   } catch {

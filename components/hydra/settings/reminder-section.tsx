@@ -11,7 +11,6 @@ import { DAY_LABELS, DAY_NAMES, formatTime, reminderSlotsForDay } from '@/lib/hy
 import { updateReminder, type ReminderSettings } from '@/lib/store'
 import { OptionChip } from '../option-chip'
 
-const INTERVALS = [30, 45, 60, 90, 120]
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0]
 
 export function ReminderSection({ reminder }: { reminder: ReminderSettings }) {
@@ -19,6 +18,23 @@ export function ReminderSection({ reminder }: { reminder: ReminderSettings }) {
   const [error, setError] = useState<string | null>(null)
 
   const patch = (next: Partial<ReminderSettings>) => setDraft((d) => ({ ...d, ...next }))
+  const schedules = draft.schedules ?? []
+
+  function addSchedule() {
+    const time = '12:00'
+    if (schedules.some((schedule) => schedule.time === time)) return setError('Jam tersebut sudah ada.')
+    patch({ schedules: [...schedules, { id: `schedule-${Date.now()}`, time, enabled: true }] })
+  }
+
+  function updateSchedule(id: string, time: string) {
+    if (schedules.some((schedule) => schedule.id !== id && schedule.time === time)) return setError('Jam tersebut sudah ada.')
+    setError(null)
+    patch({ schedules: schedules.map((schedule) => (schedule.id === id ? { ...schedule, time } : schedule)) })
+  }
+
+  function removeSchedule(id: string) {
+    patch({ schedules: schedules.filter((schedule) => schedule.id !== id) })
+  }
 
   function toggleDay(day: number) {
     patch({ days: draft.days.includes(day) ? draft.days.filter((d) => d !== day) : [...draft.days, day] })
@@ -31,10 +47,11 @@ export function ReminderSection({ reminder }: { reminder: ReminderSettings }) {
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (draft.endTime <= draft.startTime) return setError('Jam selesai harus setelah jam mulai.')
     if (draft.enabled && draft.days.length === 0) return setError('Pilih minimal satu hari aktif.')
+    if (draft.enabled && schedules.filter((schedule) => schedule.enabled).length === 0) return setError('Aktifkan minimal satu jam pengingat.')
+    if (schedules.some((schedule) => !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(schedule.time))) return setError('Gunakan format jam HH:mm yang valid.')
     setError(null)
-    updateReminder({ ...draft, days: [...draft.days].sort() })
+    updateReminder({ ...draft, days: [...draft.days].sort(), timezone: draft.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, migrationNeedsReview: false })
     toast.success(draft.enabled ? 'Jadwal pengingat disimpan' : 'Pengingat dinonaktifkan')
   }
 
@@ -51,39 +68,30 @@ export function ReminderSection({ reminder }: { reminder: ReminderSettings }) {
       </div>
 
       <fieldset disabled={!draft.enabled} className="flex flex-col gap-6 disabled:opacity-50">
-        <div className="grid gap-5 sm:grid-cols-2">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="reminder-start">Jam mulai</Label>
-            <Input
-              id="reminder-start"
-              type="time"
-              value={draft.startTime}
-              onChange={(e) => patch({ startTime: e.target.value })}
-              className="h-11"
-            />
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Label htmlFor="reminder-time">Jam pengingat</Label>
+              <p className="mt-0.5 text-xs text-muted-foreground">Pilih satu atau beberapa jam khusus.</p>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={addSchedule}>Tambah jam</Button>
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="reminder-end">Jam selesai</Label>
-            <Input
-              id="reminder-end"
-              type="time"
-              value={draft.endTime}
-              onChange={(e) => patch({ endTime: e.target.value })}
-              className="h-11"
-            />
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <span className="text-sm font-medium text-foreground" id="interval-label">
-            Interval pengingat
-          </span>
-          <div className="flex flex-wrap gap-2" role="group" aria-labelledby="interval-label">
-            {INTERVALS.map((min) => (
-              <OptionChip key={min} selected={draft.intervalMin === min} onClick={() => patch({ intervalMin: min })}>
-                {min < 60 ? `${min} mnt` : `${min / 60} jam`}
-              </OptionChip>
+            {schedules.map((schedule) => (
+              <div key={schedule.id} className="flex items-center gap-2">
+                <Input
+                  id={`reminder-${schedule.id}`}
+                  aria-label="Jam pengingat"
+                  type="time"
+                  value={schedule.time}
+                  onChange={(e) => updateSchedule(schedule.id, e.target.value)}
+                  className="h-11"
+                />
+                <Switch checked={schedule.enabled} onCheckedChange={(enabled) => patch({ schedules: schedules.map((item) => item.id === schedule.id ? { ...item, enabled } : item) })} aria-label={`Aktifkan ${schedule.time}`} />
+                <Button type="button" variant="ghost" size="sm" onClick={() => removeSchedule(schedule.id)}>Hapus</Button>
+              </div>
             ))}
+            {schedules.length === 0 && <p className="text-sm text-muted-foreground">Belum ada jam pengingat.</p>}
           </div>
         </div>
 
@@ -136,10 +144,15 @@ export function ReminderSection({ reminder }: { reminder: ReminderSettings }) {
       <div className="flex gap-3 rounded-2xl border border-border p-4 text-xs leading-relaxed text-muted-foreground">
         <Info className="size-4 shrink-0 text-primary" aria-hidden="true" />
         <p>
-          Pengingat hanya muncul selama HydraFold terbuka di browser. Notifikasi saat website ditutup belum tersedia
-          pada versi ini.
+          Jadwal tersimpan di perangkat ini dengan zona waktu IANA. Push saat website tertutup membutuhkan konfigurasi backend dan Supabase Cron; belum diaktifkan sampai skema keamanan ditinjau.
         </p>
       </div>
+
+      {draft.migrationNeedsReview && (
+        <p className="text-sm text-amber-700 dark:text-amber-300" role="status">
+          Jadwal ini dimigrasikan dari interval lama. Periksa jamnya lalu simpan untuk mengonfirmasi.
+        </p>
+      )}
 
       {error && (
         <p className="text-sm text-destructive" role="alert">
