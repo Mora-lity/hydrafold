@@ -67,7 +67,7 @@ export function ReminderSection({ reminder }: { reminder: ReminderSettings }) {
       toast.success('Notifikasi push aktif')
     } catch (activationError) {
       const message = activationError instanceof Error ? activationError.message : 'Notifikasi push gagal diaktifkan.'
-      setPushStatus(message.includes('Izin') ? 'denied' : 'failed')
+      setPushStatus(message.includes('Izin notifikasi ditolak') ? 'denied' : 'failed')
       setError(message)
     }
   }

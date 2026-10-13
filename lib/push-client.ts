@@ -73,12 +73,13 @@ async function ensureDevice() {
 }
 
 export async function registerPushSubscription() {
-  if (!supportsWebPush()) throw new Error('Browser ini belum mendukung Web Push.')
+  if (!supportsWebPush()) throw new Error('Browser ini belum mendukung Notification, PushManager, atau service worker.')
+  const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission
+  if (permission === 'denied') throw new Error('Izin notifikasi ditolak. Izinkan notifikasi HydraFold melalui pengaturan situs browser.')
+  if (permission !== 'granted') throw new Error('Izin notifikasi belum diberikan.')
   const vapidPublicKey = getVapidPublicKey()
   if (!vapidPublicKey) throw new Error('Kunci publik Web Push belum dikonfigurasi.')
-  const permission = await Notification.requestPermission()
-  if (permission !== 'granted') throw new Error('Izin notifikasi tidak diberikan.')
-  const registration = await navigator.serviceWorker.ready
+  const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' })
   const existing = await registration.pushManager.getSubscription()
   const subscription = existing ?? await registration.pushManager.subscribe({
     userVisibleOnly: true,
@@ -91,9 +92,22 @@ export async function registerPushSubscription() {
 
 export async function syncPushSchedule(settings: { id: string; time: string; enabled: boolean }[], days: number[], timezone: string) {
   const credentials = readDeviceCredentials()
-  if (!credentials) return false
-  await Promise.all(settings.map((schedule) => pushRequest('/api/push/schedule', { method: 'PUT', headers: { ...pushHeaders(credentials) }, body: JSON.stringify({ ...schedule, days, timezone }) })))
+  if (!credentials) throw new Error('Aktifkan notifikasi push terlebih dahulu sebelum menyimpan jadwal ke backend.')
+  const currentIds = new Set(settings.map((schedule) => schedule.id))
+  const storedIds = readStoredScheduleIds()
+  await Promise.all([
+    ...settings.map((schedule) => pushRequest('/api/push/schedule', { method: 'PUT', headers: pushHeaders(credentials), body: JSON.stringify({ ...schedule, days, timezone }) })),
+    ...storedIds.filter((id) => !currentIds.has(id)).map((id) => pushRequest('/api/push/schedule', { method: 'DELETE', headers: pushHeaders(credentials), body: JSON.stringify({ id }) })),
+  ])
+  try { window.localStorage.setItem('hydrafold:push-schedule-ids:v1', JSON.stringify([...currentIds])) } catch { /* Local storage is optional for server synchronization. */ }
   return true
+}
+
+function readStoredScheduleIds() {
+  try {
+    const value = JSON.parse(window.localStorage.getItem('hydrafold:push-schedule-ids:v1') ?? '[]')
+    return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
+  } catch { return [] }
 }
 
 export async function revokePushDevice() {
