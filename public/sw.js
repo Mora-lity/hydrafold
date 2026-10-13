@@ -1,18 +1,21 @@
 self.addEventListener('push', (event) => {
-  let data = { title: 'Waktunya minum air', body: 'Ambil botolmu dan minum beberapa teguk.', url: '/dashboard' }
+  let data = { title: 'Waktunya minum air', body: 'Ambil botolmu dan minum beberapa teguk.', url: '/dashboard', tag: 'hydrafold-reminder' }
   try {
-    if (event.data) data = { ...data, ...event.data.json() }
+    if (event.data) {
+      const payload = event.data.json()
+      if (payload && typeof payload === 'object') data = { ...data, ...payload }
+    }
   } catch {
     // Ignore malformed provider payloads and show the safe default notification.
   }
-  event.waitUntil(
-    self.registration.showNotification(data.title, {
-      body: data.body,
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
-      data: { url: data.url },
-    }),
-  )
+  event.waitUntil(self.registration.showNotification(String(data.title), {
+    body: String(data.body),
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    tag: String(data.tag),
+    renotify: false,
+    data: { url: typeof data.url === 'string' && data.url.startsWith('/') ? data.url : '/dashboard' },
+  }))
 })
 
 self.addEventListener('notificationclick', (event) => {
