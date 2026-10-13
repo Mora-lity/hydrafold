@@ -4,7 +4,7 @@ create extension if not exists pgcrypto;
 
 create table if not exists public.push_devices (
   id uuid primary key default gen_random_uuid(),
-  device_token text not null unique check (length(device_token) between 32 and 256),
+  device_token_hash text not null unique check (length(device_token_hash) = 64),
   active boolean not null default true,
   created_at timestamptz not null default now(),
   revoked_at timestamptz
@@ -107,7 +107,7 @@ begin
   returning d.id, d.claim_token, d.device_id, d.schedule_id, d.attempt_count;
 end $$;
 
-create or replace function public.claim_push_targets(p_delivery_id uuid, p_claim_ttl interval)
+create or replace function public.claim_push_targets(p_delivery_id uuid, p_delivery_claim_token uuid, p_claim_ttl interval)
 returns table (subscription_id uuid, endpoint text, keys jsonb, claim_token uuid)
 language plpgsql security invoker set search_path = public
 as $$
@@ -119,10 +119,51 @@ begin
     claim_until=clock_timestamp()+p_claim_ttl, attempt_count=t.attempt_count+1
   where t.ctid in (select x.ctid from public.push_delivery_targets x join public.push_subscriptions s on s.id=x.subscription_id and s.active
     join public.push_devices d on d.id=s.device_id and d.active
-    where x.delivery_id=p_delivery_id and x.attempt_count < 10 and (x.status in ('pending','retryable') or (x.status='processing' and x.claim_until < clock_timestamp()))
+    where x.delivery_id=p_delivery_id
+      and exists (select 1 from public.push_deliveries d where d.id=x.delivery_id and d.status='processing' and d.claim_token=p_delivery_claim_token and d.claim_until >= clock_timestamp())
+      and x.attempt_count < 10 and (x.status in ('pending','retryable') or (x.status='processing' and x.claim_until < clock_timestamp()))
     for update skip locked)
   returning t.subscription_id, t.endpoint, (select s.keys from public.push_subscriptions s where s.id=t.subscription_id), t.claim_token;
 end $$;
 
-grant execute on function public.claim_push_delivery(interval, integer), public.claim_push_targets(uuid, interval) to service_role;
-revoke execute on function public.claim_push_delivery(interval, integer), public.claim_push_targets(uuid, interval) from anon, authenticated;
+create or replace function public.claim_push_scheduler_cursor(p_window_start timestamptz)
+returns timestamptz
+language plpgsql security invoker set search_path = public
+as $$
+declare v_cursor timestamptz;
+begin
+  update public.push_scheduler_cursor
+  set cursor_at=greatest(cursor_at, p_window_start), updated_at=clock_timestamp()
+  where id=true and (updated_at < clock_timestamp() - interval '2 minutes' or cursor_at <= p_window_start)
+  returning cursor_at into v_cursor;
+  return v_cursor;
+end $$;
+
+create or replace function public.complete_push_target(p_delivery_id uuid, p_subscription_id uuid, p_claim_token uuid, p_status text, p_error text default null)
+returns boolean
+language plpgsql security invoker set search_path = public
+as $$
+begin
+  if p_status not in ('sent','retryable','failed') then raise exception 'invalid target status'; end if;
+  update public.push_delivery_targets
+  set status=p_status, last_error=p_error, sent_at=case when p_status='sent' then clock_timestamp() else sent_at end,
+      claim_token=null, claim_until=null
+  where delivery_id=p_delivery_id and subscription_id=p_subscription_id and status='processing' and claim_token=p_claim_token;
+  return found;
+end $$;
+
+create or replace function public.complete_push_delivery(p_delivery_id uuid, p_claim_token uuid, p_status text)
+returns boolean
+language plpgsql security invoker set search_path = public
+as $$
+begin
+  if p_status not in ('sent','retryable','failed') then raise exception 'invalid delivery status'; end if;
+  update public.push_deliveries
+  set status=p_status, completed_at=case when p_status in ('sent','failed') then clock_timestamp() else completed_at end,
+      claim_token=null, claim_until=null
+  where id=p_delivery_id and status='processing' and claim_token=p_claim_token;
+  return found;
+end $$;
+
+grant execute on function public.claim_push_delivery(interval, integer), public.claim_push_targets(uuid, uuid, interval), public.complete_push_target(uuid, uuid, uuid, text, text), public.complete_push_delivery(uuid, uuid, text) to service_role;
+revoke execute on function public.claim_push_delivery(interval, integer), public.claim_push_targets(uuid, interval), public.claim_push_targets(uuid, uuid, interval), public.complete_push_target(uuid, uuid, uuid, text, text), public.complete_push_delivery(uuid, uuid, text) from anon, authenticated;

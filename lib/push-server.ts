@@ -7,7 +7,7 @@ const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
 const vapidSubject = process.env.VAPID_SUBJECT
 
 export type DeviceContext = { id: string; token: string }
-export type PushSubscriptionInput = { endpoint: string; expirationTime?: number | null; keys: { p256dh: string; auth: string } }
+export type PushSubscriptionInput = { id?: string; endpoint: string; expirationTime?: number | null; keys: { p256dh: string; auth: string } }
 
 export function requireServerConfig() {
   if (!supabaseUrl || !supabaseServiceRoleKey || !vapidPrivateKey || !vapidPublicKey || !vapidSubject) throw new Error('Web Push server configuration is incomplete.')
@@ -29,6 +29,11 @@ export function deviceFromRequest(request: Request) {
   const token = request.headers.get('x-hydrafold-device-token')
   if (!id || !token || id.length > 128 || token.length < 32 || token.length > 256) return null
   return { id, token }
+}
+
+export async function hashDeviceToken(token: string) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 export function schedulerAuthorized(request: Request) {
@@ -93,12 +98,13 @@ export async function markDelivery(id: string, status: string, extra: Record<str
 }
 
 export async function loadDevice(id: string, token: string) {
-  const rows = await supabase<{ id: string }[]>(`push_devices?id=eq.${encodeURIComponent(id)}&device_token=eq.${encodeURIComponent(token)}&active=eq.true&select=id`)
+  const tokenHash = await hashDeviceToken(token)
+  const rows = await supabase<{ id: string }[]>(`push_devices?id=eq.${encodeURIComponent(id)}&device_token_hash=eq.${encodeURIComponent(tokenHash)}&active=eq.true&select=id`)
   return rows[0] ?? null
 }
 
 export async function loadSubscriptions(deviceId: string) {
-  return supabase<PushSubscriptionInput[]>(`push_subscriptions?device_id=eq.${encodeURIComponent(deviceId)}&active=eq.true&select=endpoint,expiration_time,keys`)
+  return supabase<PushSubscriptionInput[]>(`push_subscriptions?device_id=eq.${encodeURIComponent(deviceId)}&active=eq.true&select=id,endpoint,expiration_time:expiration_time,keys`)
 }
 
 export async function loadSchedules(deviceId: string) {
@@ -109,14 +115,15 @@ export async function processDueDelivery(delivery: { id: string; device_id: stri
   const subscriptions = await loadSubscriptions(delivery.device_id)
   let succeeded = 0
   for (const subscription of subscriptions) {
-    const target = await supabase<{ status: string }[]>('push_delivery_targets?select=status&delivery_id=eq.' + encodeURIComponent(delivery.id) + '&endpoint=eq.' + encodeURIComponent(subscription.endpoint))
+    if (!subscription.id) continue
+    const target = await supabase<{ status: string }[]>('push_delivery_targets?select=status&delivery_id=eq.' + encodeURIComponent(delivery.id) + '&subscription_id=eq.' + encodeURIComponent(subscription.id))
     if (target[0]?.status === 'sent') continue
     try {
       await sendPush(subscription, { type: 'reminder', scheduleId: delivery.schedule_id })
-      await supabase('push_delivery_targets', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ delivery_id: delivery.id, endpoint: subscription.endpoint, status: 'sent', sent_at: new Date().toISOString() }) })
+      await supabase('push_delivery_targets', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ delivery_id: delivery.id, subscription_id: subscription.id, endpoint: subscription.endpoint, status: 'sent', sent_at: new Date().toISOString() }) })
       succeeded++
     } catch (error) {
-      await supabase('push_delivery_targets', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ delivery_id: delivery.id, endpoint: subscription.endpoint, status: isRetryablePushError(error) ? 'retryable' : 'failed', last_error: String(error) }) })
+      await supabase('push_delivery_targets', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ delivery_id: delivery.id, subscription_id: subscription.id, endpoint: subscription.endpoint, status: isRetryablePushError(error) ? 'retryable' : 'failed', last_error: String(error) }) })
     }
   }
   return succeeded
