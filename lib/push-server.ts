@@ -198,3 +198,9 @@ export async function processDueDelivery(delivery: {
   return succeeded
 }
 
+export const MAX_ATTEMPTS = 5
+export const CLAIM_TTL_SECONDS = 120
+
+
+
+
