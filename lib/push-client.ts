@@ -30,6 +30,48 @@ export function serializePushSubscription(subscription: PushSubscription): PushS
   }
 }
 
+const DEVICE_STORAGE_KEY = 'hydrafold:push-device:v1'
+
+type DeviceCredentials = { deviceId: string; deviceToken: string }
+
+function readDeviceCredentials(): DeviceCredentials | null {
+  try {
+    const raw = window.localStorage.getItem(DEVICE_STORAGE_KEY)
+    if (!raw) return null
+    const value = JSON.parse(raw) as Partial<DeviceCredentials>
+    return typeof value.deviceId === 'string' && typeof value.deviceToken === 'string' ? value as DeviceCredentials : null
+  } catch {
+    return null
+  }
+}
+
+function saveDeviceCredentials(credentials: DeviceCredentials) {
+  window.localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify(credentials))
+}
+
+function pushHeaders(credentials: DeviceCredentials) {
+  return { 'Content-Type': 'application/json', 'x-hydrafold-device-id': credentials.deviceId, 'x-hydrafold-device-token': credentials.deviceToken }
+}
+
+async function pushRequest(path: string, init: RequestInit = {}) {
+  const response = await fetch(path, { ...init, headers: { ...pushHeaders(readDeviceCredentials()!), ...(init.headers ?? {}) } })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null
+    throw new Error(body?.error ?? 'Permintaan Web Push gagal.')
+  }
+  return response
+}
+
+async function ensureDevice() {
+  const existing = readDeviceCredentials()
+  if (existing) return existing
+  const response = await fetch('/api/push/device', { method: 'POST' })
+  if (!response.ok) throw new Error('Perangkat Web Push gagal didaftarkan.')
+  const credentials = await response.json() as DeviceCredentials
+  saveDeviceCredentials(credentials)
+  return credentials
+}
+
 export async function registerPushSubscription() {
   if (!supportsWebPush()) throw new Error('Browser ini belum mendukung Web Push.')
   const vapidPublicKey = getVapidPublicKey()
@@ -37,11 +79,29 @@ export async function registerPushSubscription() {
   const permission = await Notification.requestPermission()
   if (permission !== 'granted') throw new Error('Izin notifikasi tidak diberikan.')
   const registration = await navigator.serviceWorker.ready
-  const subscription = await registration.pushManager.subscribe({
+  const existing = await registration.pushManager.getSubscription()
+  const subscription = existing ?? await registration.pushManager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: base64UrlToBytes(vapidPublicKey),
   })
+  const credentials = await ensureDevice()
+  await pushRequest('/api/push/subscription', { method: 'POST', headers: { ...pushHeaders(credentials) }, body: JSON.stringify(serializePushSubscription(subscription)) })
   return serializePushSubscription(subscription)
+}
+
+export async function syncPushSchedule(settings: { id: string; time: string; enabled: boolean }[], days: number[], timezone: string) {
+  const credentials = readDeviceCredentials()
+  if (!credentials) return false
+  await Promise.all(settings.map((schedule) => pushRequest('/api/push/schedule', { method: 'PUT', headers: { ...pushHeaders(credentials) }, body: JSON.stringify({ ...schedule, days, timezone }) })))
+  return true
+}
+
+export async function revokePushDevice() {
+  const credentials = readDeviceCredentials()
+  if (credentials) await fetch('/api/push/device', { method: 'DELETE', headers: pushHeaders(credentials) })
+  const unsubscribed = await unregisterPushSubscription()
+  try { window.localStorage.removeItem(DEVICE_STORAGE_KEY) } catch { /* Storage may be blocked. */ }
+  return unsubscribed
 }
 
 export async function unregisterPushSubscription() {
@@ -49,6 +109,10 @@ export async function unregisterPushSubscription() {
   const registration = await navigator.serviceWorker.ready
   const subscription = await registration.pushManager.getSubscription()
   return subscription ? subscription.unsubscribe() : false
+}
+
+export function getPushPermission(): NotificationPermission | 'unsupported' {
+  return supportsWebPush() ? Notification.permission : 'unsupported'
 }
 
 export type ScheduledOccurrence = {

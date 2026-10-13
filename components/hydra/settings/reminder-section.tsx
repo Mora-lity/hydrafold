@@ -10,12 +10,25 @@ import { Switch } from '@/components/ui/switch'
 import { DAY_LABELS, DAY_NAMES, formatTime, reminderSlotsForDay } from '@/lib/hydration'
 import { updateReminder, type ReminderSettings } from '@/lib/store'
 import { OptionChip } from '../option-chip'
+import { getPushPermission, registerPushSubscription, revokePushDevice, syncPushSchedule } from '@/lib/push-client'
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0]
 
 export function ReminderSection({ reminder }: { reminder: ReminderSettings }) {
   const [draft, setDraft] = useState<ReminderSettings>(reminder)
   const [error, setError] = useState<string | null>(null)
+  const [pushStatus, setPushStatus] = useState<'idle' | 'activating' | 'active' | 'denied' | 'failed'>('idle')
+
+  const permission = getPushPermission()
+  const pushStatusLabel = permission === 'denied' || pushStatus === 'denied'
+    ? 'Izin ditolak'
+    : pushStatus === 'active'
+      ? 'Aktif'
+      : pushStatus === 'failed'
+        ? 'Gagal mengaktifkan'
+        : permission === 'unsupported'
+          ? 'Belum aktif di browser ini'
+          : 'Belum aktif'
 
   const patch = (next: Partial<ReminderSettings>) => setDraft((d) => ({ ...d, ...next }))
   const schedules = draft.schedules ?? []
@@ -45,14 +58,47 @@ export function ReminderSection({ reminder }: { reminder: ReminderSettings }) {
   previewDate.setDate(previewDate.getDate() + ((sampleDay - previewDate.getDay() + 7) % 7))
   const slots = reminderSlotsForDay({ ...draft, enabled: true, days: [sampleDay] }, previewDate)
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function enablePush() {
+    setPushStatus('activating')
+    setError(null)
+    try {
+      await registerPushSubscription()
+      setPushStatus('active')
+      toast.success('Notifikasi push aktif')
+    } catch (activationError) {
+      const message = activationError instanceof Error ? activationError.message : 'Notifikasi push gagal diaktifkan.'
+      setPushStatus(message.includes('Izin') ? 'denied' : 'failed')
+      setError(message)
+    }
+  }
+
+  async function disablePush() {
+    setError(null)
+    try {
+      await revokePushDevice()
+      setPushStatus('idle')
+      toast.success('Notifikasi push dinonaktifkan')
+    } catch (revokeError) {
+      setPushStatus('failed')
+      setError(revokeError instanceof Error ? revokeError.message : 'Notifikasi push gagal dinonaktifkan.')
+    }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (draft.enabled && draft.days.length === 0) return setError('Pilih minimal satu hari aktif.')
     if (draft.enabled && schedules.filter((schedule) => schedule.enabled).length === 0) return setError('Aktifkan minimal satu jam pengingat.')
     if (schedules.some((schedule) => !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(schedule.time))) return setError('Gunakan format jam HH:mm yang valid.')
     setError(null)
-    updateReminder({ ...draft, days: [...draft.days].sort(), timezone: draft.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, migrationNeedsReview: false })
-    toast.success(draft.enabled ? 'Jadwal pengingat disimpan' : 'Pengingat dinonaktifkan')
+    const timezone = draft.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    const normalized = { ...draft, days: [...draft.days].sort(), timezone, migrationNeedsReview: false }
+    updateReminder(normalized)
+    try {
+      await syncPushSchedule(schedules, normalized.days, timezone)
+      toast.success(draft.enabled ? 'Jadwal pengingat disimpan' : 'Pengingat dinonaktifkan')
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Jadwal tersimpan lokal, tetapi gagal disinkronkan.')
+    }
   }
 
   return (
@@ -141,11 +187,24 @@ export function ReminderSection({ reminder }: { reminder: ReminderSettings }) {
         </div>
       </fieldset>
 
-      <div className="flex gap-3 rounded-2xl border border-border p-4 text-xs leading-relaxed text-muted-foreground">
-        <Info className="size-4 shrink-0 text-primary" aria-hidden="true" />
-        <p>
-          Jadwal tersimpan di perangkat ini dengan zona waktu IANA. Push saat website tertutup membutuhkan konfigurasi backend dan Supabase Cron; belum diaktifkan sampai skema keamanan ditinjau.
-        </p>
+      <div className="flex flex-col gap-3 rounded-2xl border border-border p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Notifikasi saat website tertutup</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">Status: {pushStatusLabel}</p>
+          </div>
+          {pushStatus === 'activating' ? (
+            <Button type="button" size="sm" variant="outline" disabled>Memproses...</Button>
+          ) : pushStatus === 'active' ? (
+            <Button type="button" size="sm" variant="outline" onClick={() => void disablePush()}>Nonaktifkan</Button>
+          ) : (
+            <Button type="button" size="sm" onClick={() => void enablePush()}>Aktifkan</Button>
+          )}
+        </div>
+        <div className="flex gap-2 text-xs leading-relaxed text-muted-foreground">
+          <Info className="size-4 shrink-0 text-primary" aria-hidden="true" />
+          <p>Jadwal tersimpan di perangkat ini dengan zona waktu IANA. Push saat website tertutup membutuhkan konfigurasi backend dan scheduler eksternal.</p>
+        </div>
       </div>
 
       {draft.migrationNeedsReview && (
