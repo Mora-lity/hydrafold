@@ -139,7 +139,7 @@ export type ScheduledOccurrence = {
 
 type Schedule = { id: string; time: string; enabled: boolean; days?: number[] }
 
-const timePattern = /^(?:[01]\\d|2[0-3]):[0-5]\\d$/
+const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/
 
 function partsInTimezone(date: Date, timezone: string) {
   const parts = new Intl.DateTimeFormat('en-CA', {
