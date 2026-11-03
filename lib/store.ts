@@ -72,7 +72,42 @@ export const DEFAULT_REMINDER: ReminderSettings = {
   ],
 }
 
+
 function migrateReminder(input: Partial<ReminderSettings> | undefined): ReminderSettings {
+  const reminder = { ...DEFAULT_REMINDER, ...input }
+
+  if (Array.isArray(input?.schedules)) {
+    const schedules = input.schedules.map((schedule) => ({
+      ...schedule,
+      time: typeof schedule.time === 'string'
+        ? schedule.time.trim().replace(/\./g, ':')
+        : '',
+    }))
+
+    return { ...reminder, schedules }
+  }
+
+  const start = Number(input?.startTime?.split(':')[0])
+  const end = Number(input?.endTime?.split(':')[0])
+  const interval = Number(input?.intervalMin)
+  const schedules: ReminderSchedule[] = []
+
+  if (Number.isInteger(start) && Number.isInteger(end) && interval >= 15 && end >= start && end <= 23) {
+    for (let minutes = start * 60; minutes <= end * 60; minutes += interval) {
+      const time = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+      schedules.push({ id: `migrated-${time.replace(':', '-')}`, time, enabled: true })
+    }
+  }
+
+  return {
+    ...reminder,
+    schedules: schedules.length
+      ? schedules
+      : [{ id: 'review-07-00', time: '07:00', enabled: false }],
+    migrationNeedsReview: true,
+  }
+}
+
   const reminder = { ...DEFAULT_REMINDER, ...input }
   if (Array.isArray(input?.schedules)) return reminder
   const start = Number(input?.startTime?.split(':')[0])
