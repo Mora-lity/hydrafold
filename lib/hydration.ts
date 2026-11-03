@@ -85,6 +85,12 @@ function atMinutes(base: Date, minutes: number) {
 /** All reminder times for the given date (empty if the day is inactive). */
 export function reminderSlotsForDay(reminder: ReminderSettings, date: Date) {
   if (!reminder.enabled || !reminder.days.includes(date.getDay())) return []
+  if (reminder.schedules?.length) {
+    return reminder.schedules
+      .filter((schedule) => schedule.enabled && (!schedule.days || schedule.days.includes(date.getDay())))
+      .map((schedule) => atMinutes(date, toMinutes(schedule.time)))
+      .sort((a, b) => a.getTime() - b.getTime())
+  }
   const start = toMinutes(reminder.startTime)
   const end = toMinutes(reminder.endTime)
   const interval = Math.max(15, reminder.intervalMin)
