@@ -25,6 +25,7 @@ export type ReminderSettings = {
   startTime: string
   endTime: string
   intervalMin: number
+  scheduleMode?: 'custom' | 'interval'
   days: number[]
   timezone?: string
   schedules?: ReminderSchedule[]
@@ -51,6 +52,7 @@ export const DEFAULT_REMINDER: ReminderSettings = {
   startTime: '07:00',
   endTime: '21:00',
   intervalMin: 60,
+  scheduleMode: 'custom',
   days: [1, 2, 3, 4, 5],
   timezone: undefined,
   schedules: [
